@@ -6,6 +6,7 @@ using NesEmulatorAvaloniaTest.NES.OpCodes;
 namespace NesEmulatorAvaloniaTest.NES.CPU;
 using CpuFlags;
 using AddressingMode;
+using AritmetricHelper;
 
 public class Cpu
 {
@@ -26,14 +27,15 @@ public class Cpu
         return (CpuFlags)(bits & validMask);
     }
 
+    public bool running = true;
     private byte _stackReset = 0xfd;
     private ushort _stack = 0x0100;
-    private byte _registerA = 0;
-    private byte _registerX = 0;
-    private byte _registerY = 0;
+    public byte RegisterA = 0;
+    public byte RegisterX = 0;
+    public  byte RegisterY = 0;
     private byte _stackPointer;
-    private CpuFlags _status = TruncateFromBits(0b100100);
-    private ushort _programCounter = 0;
+    public CpuFlags Status = TruncateFromBits(0b100100);
+    public ushort _programCounter = 0;
     private byte[] _memory = new byte[0xffff];
     private readonly Dictionary<byte, OpCode> _opCodeMap = OpCodes.OpCodes.OpCodeMap;
 
@@ -49,8 +51,8 @@ public class Cpu
 
     private ushort MemRead16(ushort address)
     {
-        var lo = MemRead(address);
-        var hi = MemRead((ushort)(address + 1));
+        var lo = (ushort)MemRead(address);
+        var hi = (ushort)MemRead((ushort)(address + 1));
         return (ushort)((hi << 8) | lo);
     }
 
@@ -69,9 +71,9 @@ public class Cpu
 
     public void Reset()
     {
-        _registerA = 0;
-        _registerX = 0;
-        _status = TruncateFromBits(0b100100);
+        RegisterA = 0;
+        RegisterX = 0;
+        Status = TruncateFromBits(0b0100100);
         _stackPointer = _stackReset;
         _programCounter = MemRead16(0xfffc);
     }
@@ -84,18 +86,18 @@ public class Cpu
 
     public void Run()
     {
-        RunWithCallback(_ => { });
+        RunWithCallback((_,_,_) => { });
     }
 
-    public void RunWithCallback(Action<Cpu> callback)
+    public void RunWithCallback(Action<Cpu, byte, OpCode> callback)
     {
-        while (true)
+        while (running)
         {
-            callback(this);
             var code = MemRead(_programCounter);
             _programCounter++;
             var programCounterState = _programCounter;
             var opCode = _opCodeMap[code];
+            callback(this, code, opCode);
             if (code == 0x00) return;
             switch (code)
             {
@@ -130,7 +132,7 @@ public class Cpu
                     InsertCpuFlag(CpuFlags.DecimalMode);
                     break;
                 case 0x48:
-                    StackPush(_registerA);
+                    StackPush(RegisterA);
                     break;
                 case 0x68:
                     Pla();
@@ -197,13 +199,13 @@ public class Cpu
                     break;
                 case 0xc9 or 0xc5 or 0xd5 or 0xcd or 0xdd or 0xd9 or 0xc1 or 0xd1:
                     Compare(opCode.AddressingMode,
-                        _registerA);
+                        RegisterA);
                     break;
                 case 0xc0 or 0xc4 or 0xcc:
-                    Compare(opCode.AddressingMode, _registerY);
+                    Compare(opCode.AddressingMode, RegisterY);
                     break;
                 case 0xe0 or 0xe4 or 0xec:
-                    Compare(opCode.AddressingMode, _registerX);
+                    Compare(opCode.AddressingMode, RegisterX);
                     break;
                 case 0x4c:
                     LoadProgramCounter16();
@@ -300,10 +302,10 @@ public class Cpu
             AddressingMode.Immediate => _programCounter,
             AddressingMode.ZeroPage => MemRead(_programCounter),
             AddressingMode.Absolute => MemRead16(_programCounter),
-            AddressingMode.ZeroPageX => WrappingAdd(MemRead(_programCounter), _registerX),
-            AddressingMode.ZeroPageY => WrappingAdd(MemRead(_programCounter), _registerY),
-            AddressingMode.AbsoluteX => WrappingAdd(MemRead16(_programCounter), _registerX),
-            AddressingMode.AbsoluteY => WrappingAdd(MemRead16(_programCounter), _registerY),
+            AddressingMode.ZeroPageX => AritmetricHelper.WrappingAdd(MemRead(_programCounter), RegisterX),
+            AddressingMode.ZeroPageY => AritmetricHelper.WrappingAdd(MemRead(_programCounter), RegisterY),
+            AddressingMode.AbsoluteX => AritmetricHelper.WrappingAdd(MemRead16(_programCounter), RegisterX),
+            AddressingMode.AbsoluteY => AritmetricHelper.WrappingAdd(MemRead16(_programCounter), RegisterY),
             AddressingMode.IndirectX => IndirectX(),
             AddressingMode.IndirectY => IndirectY(),
             _ => throw new NotImplementedException(),
@@ -314,23 +316,23 @@ public class Cpu
     {
         var addr = GetOperandAddress(addressingMode);
         var val = MemRead(addr);
-        _registerA = val;
-        /*UpdateZeroAndNegativeFlags();*/
+        RegisterA = val;
+        UpdateZeroAndNegativeFlags(RegisterA);
     }
 
     private void InsertCpuFlag(CpuFlags flag)
     {
-        _status |= flag;
+        Status |= flag;
     }
 
     private void ClearCpuFlag(CpuFlags flag)
     {
-        _status &= ~flag;
+        Status &= ~flag;
     }
 
-    private bool CpuFlagIsSet(CpuFlags flag)
+    public bool CpuFlagIsSet(CpuFlags flag)
     {
-        return (_status & flag) == flag;
+        return (Status & flag) == flag;
     }
 
     private void SetCpuFlag(CpuFlags flag, bool value)
@@ -342,22 +344,22 @@ public class Cpu
 
     private void AddToRegisterA(byte data)
     {
-        var sum = (ushort)(_registerA + data + (CpuFlagIsSet(CpuFlags.Carry) ? 1 : 0));
+        var sum = (ushort)(RegisterA + data + (CpuFlagIsSet(CpuFlags.Carry) ? 1 : 0));
         var carry = sum > 0xFF;
         if (carry) InsertCpuFlag(CpuFlags.Carry);
         else ClearCpuFlag(CpuFlags.Carry);
         var result = (byte)sum;
-        if (((data ^ result) & (result ^ _registerA) & 0x89) != 0) InsertCpuFlag(CpuFlags.Overflow);
+        if (((data ^ result) & (result ^ RegisterA) & 0x89) != 0) InsertCpuFlag(CpuFlags.Overflow);
         else ClearCpuFlag(CpuFlags.Overflow);
-        _registerA = result;
-        UpdateZeroAndNegativeFlags(_registerA);
+        RegisterA = result;
+        UpdateZeroAndNegativeFlags(RegisterA);
     }
 
     private void Sbc(AddressingMode addressingMode)
     {
         var addr = GetOperandAddress(addressingMode);
         var data = MemRead(addr);
-        AddToRegisterA(WrappingSub<byte, sbyte>(data, 1));
+        AddToRegisterA(AritmetricHelper.WrappingSub<byte, sbyte>(data, 1));
     }
 
     private void Adc(AddressingMode addressingMode)
@@ -369,14 +371,14 @@ public class Cpu
 
     private byte StackPop()
     {
-        _stackPointer = WrappingAdd<byte>(_stackPointer, 1);
+        _stackPointer = AritmetricHelper.WrappingAdd<byte>(_stackPointer, 1);
         return MemRead((ushort)(_stack + _stackPointer));
     }
 
     private void StackPush(byte value)
     {
         MemWrite((ushort)(_stack + _stackPointer), value);
-        _stackPointer = WrappingSub<byte, sbyte>(_stackPointer, 1);
+        _stackPointer = AritmetricHelper.WrappingSub<byte, sbyte>(_stackPointer, 1);
     }
 
     private void StackPush16(ushort value)
@@ -396,10 +398,10 @@ public class Cpu
 
     private void AslAccumulator()
     {
-        if (_registerA >> 7 == 1) InsertCpuFlag(CpuFlags.Carry);
+        if (RegisterA >> 7 == 1) InsertCpuFlag(CpuFlags.Carry);
         else ClearCpuFlag(CpuFlags.Carry);
-        _registerA = (byte)(_registerA << 1);
-        UpdateZeroAndNegativeFlags(_registerA);
+        RegisterA = (byte)(RegisterA << 1);
+        UpdateZeroAndNegativeFlags(RegisterA);
     }
 
     private byte Asl(AddressingMode addressingMode)
@@ -416,10 +418,10 @@ public class Cpu
 
     private void LsrAccumulator()
     {
-        if ((_registerA & 1) == 1) InsertCpuFlag(CpuFlags.Carry);
+        if ((RegisterA & 1) == 1) InsertCpuFlag(CpuFlags.Carry);
         else ClearCpuFlag(CpuFlags.Carry);
-        _registerA = (byte)(_registerA >> 1);
-        UpdateZeroAndNegativeFlags(_registerA);
+        RegisterA = (byte)(RegisterA >> 1);
+        UpdateZeroAndNegativeFlags(RegisterA);
     }
 
     private byte Lsr(AddressingMode addressingMode)
@@ -437,11 +439,11 @@ public class Cpu
     private void RolAccumulator()
     {
         var oldCarry = CpuFlagIsSet(CpuFlags.Carry);
-        if ((_registerA >> 7) == 1) InsertCpuFlag(CpuFlags.Carry);
+        if ((RegisterA >> 7) == 1) InsertCpuFlag(CpuFlags.Carry);
         else ClearCpuFlag(CpuFlags.Carry);
-        _registerA = (byte)(_registerA << 1);
-        if (oldCarry) _registerA = (byte)(_registerA | 1);
-        UpdateZeroAndNegativeFlags(_registerA);
+        RegisterA = (byte)(RegisterA << 1);
+        if (oldCarry) RegisterA = (byte)(RegisterA | 1);
+        UpdateZeroAndNegativeFlags(RegisterA);
     }
 
     private byte Rol(AddressingMode addressingMode)
@@ -461,11 +463,11 @@ public class Cpu
     private void RorAccumulator()
     {
         var oldCarry = CpuFlagIsSet(CpuFlags.Carry);
-        if ((_registerA & 1) == 1) InsertCpuFlag(CpuFlags.Carry);
+        if ((RegisterA & 1) == 1) InsertCpuFlag(CpuFlags.Carry);
         else ClearCpuFlag(CpuFlags.Carry);
-        _registerA = (byte)(_registerA >> 1);
-        if (oldCarry) _registerA = (byte)(_registerA | 0b10000000);
-        UpdateZeroAndNegativeFlags(_registerA);
+        RegisterA = (byte)(RegisterA >> 1);
+        if (oldCarry) RegisterA = (byte)(RegisterA | 0b10000000);
+        UpdateZeroAndNegativeFlags(RegisterA);
     }
 
     private byte Ror(AddressingMode addressingMode)
@@ -486,7 +488,7 @@ public class Cpu
     {
         var addr = GetOperandAddress(addressingMode);
         var data = MemRead(addr);
-        data = WrappingAdd<byte>(data, 1);
+        data = AritmetricHelper.WrappingAdd<byte>(data, 1);
         MemWrite(addr, data);
         UpdateZeroAndNegativeFlags(data);
         return data;
@@ -494,21 +496,21 @@ public class Cpu
 
     private void Dey()
     {
-        _registerY = WrappingSub<byte, sbyte>(_registerY, 1);
-        UpdateZeroAndNegativeFlags(_registerY);
+        RegisterY = AritmetricHelper.WrappingSub<byte, sbyte>(RegisterY, 1);
+        UpdateZeroAndNegativeFlags(RegisterY);
     }
 
     private void Dex()
     {
-        _registerX = WrappingSub<byte, sbyte>(_registerX, 1);
-        UpdateZeroAndNegativeFlags(_registerX);
+        RegisterX = AritmetricHelper.WrappingSub<byte, sbyte>(RegisterX, 1);
+        UpdateZeroAndNegativeFlags(RegisterX);
     }
 
     private byte Dec(AddressingMode addressingMode)
     {
         var addr = GetOperandAddress(addressingMode);
         var data = MemRead(addr);
-        data = WrappingSub<byte, sbyte>(data, 1);
+        data = AritmetricHelper.WrappingSub<byte, sbyte>(data, 1);
         MemWrite(addr, data);
         UpdateZeroAndNegativeFlags(data);
         return data;
@@ -516,13 +518,13 @@ public class Cpu
 
     private void Pla()
     {
-        _registerA = StackPop();
-        UpdateZeroAndNegativeFlags(_registerA);
+        RegisterA = StackPop();
+        UpdateZeroAndNegativeFlags(RegisterA);
     }
 
     private void Php()
     {
-        var flags = _status;
+        var flags = Status;
         flags |= CpuFlags.Break;
         flags |= CpuFlags.Break2;
         StackPush((byte)flags);
@@ -531,7 +533,7 @@ public class Cpu
     private void Plp()
     {
         var newBits = StackPop();
-        _status = TruncateFromBits(newBits);
+        Status = TruncateFromBits(newBits);
         ClearCpuFlag(CpuFlags.Break);
         ClearCpuFlag(CpuFlags.Break2);
     }
@@ -540,7 +542,7 @@ public class Cpu
     {
         var addr = GetOperandAddress(addressingMode);
         var data = MemRead(addr);
-        var and = _registerA & data;
+        var and = RegisterA & data;
         if (and == 0) InsertCpuFlag(CpuFlags.Zero);
         else ClearCpuFlag(CpuFlags.Zero);
         SetCpuFlag(CpuFlags.Negative, (data & 0b10000000) > 0);
@@ -553,73 +555,73 @@ public class Cpu
         var data = MemRead(addr);
         if (data <= comparison) InsertCpuFlag(CpuFlags.Carry);
         else ClearCpuFlag(CpuFlags.Carry);
-        UpdateZeroAndNegativeFlags(WrappingSub<byte, sbyte>(comparison, data));
+        UpdateZeroAndNegativeFlags(AritmetricHelper.WrappingSub<byte, sbyte>(comparison, data));
     }
 
     private void Branch(bool condition)
     {
         if (!condition) return;
         var jump = (sbyte)MemRead(_programCounter);
-        _programCounter = WrappingAdd<ushort>(_programCounter, 1);
-        _programCounter = WrappingAdd(_programCounter, (byte)jump);
+        _programCounter = AritmetricHelper.WrappingAdd<ushort>(_programCounter, 1);
+        _programCounter = AritmetricHelper.WrappingAdd(_programCounter, (ushort)(short)jump);
     }
 
     private void Tax()
     {
-        _registerX = _registerA;
-        UpdateZeroAndNegativeFlags(_registerX);
+        RegisterX = RegisterA;
+        UpdateZeroAndNegativeFlags(RegisterX);
     }
 
     private void Inx()
     {
-        _registerX = WrappingAdd<byte>(_registerX, 1);
-        UpdateZeroAndNegativeFlags(_registerX);
+        RegisterX = AritmetricHelper.WrappingAdd<byte>(RegisterX, 1);
+        UpdateZeroAndNegativeFlags(RegisterX);
     }
 
     private void Iny()
     {
-        _registerY = WrappingAdd<byte>(_registerY, 1);
-        UpdateZeroAndNegativeFlags(_registerY);
+        RegisterY = AritmetricHelper.WrappingAdd<byte>(RegisterY, 1);
+        UpdateZeroAndNegativeFlags(RegisterY);
     }
 
     private void Ldy(AddressingMode addressingMode)
     {
         var addr = GetOperandAddress(addressingMode);
         var data = MemRead(addr);
-        _registerY = data;
-        UpdateZeroAndNegativeFlags(_registerY);
+        RegisterY = data;
+        UpdateZeroAndNegativeFlags(RegisterY);
     }
 
     private void Ldx(AddressingMode addressingMode)
     {
         var addr = GetOperandAddress(addressingMode);
         var data = MemRead(addr);
-        _registerX = data;
-        UpdateZeroAndNegativeFlags(_registerX);
+        RegisterX = data;
+        UpdateZeroAndNegativeFlags(RegisterX);
     }
 
     private void And(AddressingMode addressingMode)
     {
         var addr = GetOperandAddress(addressingMode);
         var data = MemRead(addr);
-        _registerA = (byte)(data & _registerA);
-        UpdateZeroAndNegativeFlags(_registerA);
+        RegisterA = (byte)(data & RegisterA);
+        UpdateZeroAndNegativeFlags(RegisterA);
     }
 
     private void Eor(AddressingMode addressingMode)
     {
         var addr = GetOperandAddress(addressingMode);
         var data = MemRead(addr);
-        _registerA = (byte)(data ^ _registerA);
-        UpdateZeroAndNegativeFlags(_registerA);
+        RegisterA = (byte)(data ^ RegisterA);
+        UpdateZeroAndNegativeFlags(RegisterA);
     }
 
     private void Ora(AddressingMode addressingMode)
     {
         var addr = GetOperandAddress(addressingMode);
         var data = MemRead(addr);
-        _registerA = (byte)(data | _registerA);
-        UpdateZeroAndNegativeFlags(_registerA);
+        RegisterA = (byte)(data | RegisterA);
+        UpdateZeroAndNegativeFlags(RegisterA);
     }
 
     private void UpdateZeroAndNegativeFlags(byte data)
@@ -635,42 +637,12 @@ public class Cpu
         Run();
     }
 
-    /*Helper methods to simulate Rusts wrapping add and wrapping sub*/
-    private T WrappingSub<T, TSigned>(T value, T sub)
-        where T : INumber<T>
-        where TSigned : ISignedNumber<TSigned>
-    {
-        var val = ToSigned<T, TSigned>(value);
-        var subVal = ToSigned<T, TSigned>(sub);
-        val = val - subVal;
-        return ToUnsigned<T, TSigned>(val);
-    }
-
-    private T WrappingAdd<T>(T value, T add) where T : INumber<T>
-    {
-        return value + add;
-    }
-
-    private TSigned ToSigned<T, TSigned>(T value)
-        where T : INumber<T>
-        where TSigned : ISignedNumber<TSigned>
-    {
-        return TSigned.CreateTruncating(value);
-    }
-
-    private T ToUnsigned<T, TSigned>(TSigned value)
-        where T : INumber<T>
-        where TSigned : ISignedNumber<TSigned>
-    {
-        return T.CreateTruncating(value);
-    }
-
     private ushort IndirectX()
     {
         var baseMem = MemRead(_programCounter);
-        var ptr = WrappingAdd(baseMem, _registerX);
+        var ptr = AritmetricHelper.WrappingAdd(baseMem, RegisterX);
         var lo = MemRead(ptr);
-        var hi = MemRead(WrappingAdd<byte>(ptr, 1));
+        var hi = MemRead(AritmetricHelper.WrappingAdd<byte>(ptr, 1));
         return (ushort)((hi << 8) | lo);
     }
 
@@ -678,9 +650,9 @@ public class Cpu
     {
         var baseMem = MemRead(_programCounter);
         var lo = MemRead(baseMem);
-        var hi = MemRead(WrappingAdd<byte>(baseMem, 1));
+        var hi = MemRead(AritmetricHelper.WrappingAdd<byte>(baseMem, 1));
         var derefBaseMem = (ushort)((hi << 8) | lo);
-        var deref = WrappingAdd(derefBaseMem, _registerY);
+        var deref = AritmetricHelper.WrappingAdd(derefBaseMem, RegisterY);
         return deref;
     }
 
@@ -708,7 +680,7 @@ public class Cpu
     private void Rti()
     {
         var newBits = StackPop();
-        _status = TruncateFromBits(newBits);
+        Status = TruncateFromBits(newBits);
         ClearCpuFlag(CpuFlags.Break);
         InsertCpuFlag(CpuFlags.Break2);
         _programCounter = StackPop16();
@@ -717,19 +689,19 @@ public class Cpu
     private void Sta(AddressingMode addressingMode)
     {
         var addr = GetOperandAddress(addressingMode);
-        MemWrite(addr, _registerA);
+        MemWrite(addr, RegisterA);
     }
 
     private void Stx(AddressingMode addressingMode)
     {
         var addr = GetOperandAddress(addressingMode);
-        MemWrite(addr, _registerX);
+        MemWrite(addr, RegisterX);
     }
 
     private void Sty(AddressingMode addressingMode)
     {
         var addr = GetOperandAddress(addressingMode);
-        MemWrite(addr, _registerY);
+        MemWrite(addr, RegisterY);
     }
 
     private void Nop()
@@ -738,31 +710,31 @@ public class Cpu
 
     private void Tay()
     {
-        _registerY = _registerA;
-        UpdateZeroAndNegativeFlags(_registerY);
+        RegisterY = RegisterA;
+        UpdateZeroAndNegativeFlags(RegisterY);
     }
 
     private void Tsx()
     {
-        _registerX = _stackPointer;
-        UpdateZeroAndNegativeFlags(_registerX);
+        RegisterX = _stackPointer;
+        UpdateZeroAndNegativeFlags(RegisterX);
     }
 
     private void Txa()
     {
-        _registerA = _registerX;
-        UpdateZeroAndNegativeFlags(_registerA);
+        RegisterA = RegisterX;
+        UpdateZeroAndNegativeFlags(RegisterA);
     }
 
     private void Txs()
     {
-        _stackPointer = _registerX;
+        _stackPointer = RegisterX;
     }
 
     private void Tya()
     {
-        _registerA = _registerY;
-        UpdateZeroAndNegativeFlags(_registerA);
+        RegisterA = RegisterY;
+        UpdateZeroAndNegativeFlags(RegisterA);
     }
 
     private void LoadProgramCounter16()
