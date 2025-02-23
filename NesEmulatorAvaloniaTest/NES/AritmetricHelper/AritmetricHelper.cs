@@ -11,7 +11,7 @@ public static class AritmetricHelper
     {
         var val = ToSigned<T, TSigned>(value);
         var subVal = ToSigned<T, TSigned>(sub);
-        val = val - subVal;
+        val = - val - subVal;
         return ToUnsigned<T, TSigned>(val);
     }
 

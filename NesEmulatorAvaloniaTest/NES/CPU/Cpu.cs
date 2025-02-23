@@ -349,7 +349,7 @@ public class Cpu
         if (carry) InsertCpuFlag(CpuFlags.Carry);
         else ClearCpuFlag(CpuFlags.Carry);
         var result = (byte)sum;
-        if (((data ^ result) & (result ^ RegisterA) & 0x89) != 0) InsertCpuFlag(CpuFlags.Overflow);
+        if (((data ^ result) & (result ^ RegisterA) & 0x80) != 0) InsertCpuFlag(CpuFlags.Overflow);
         else ClearCpuFlag(CpuFlags.Overflow);
         RegisterA = result;
         UpdateZeroAndNegativeFlags(RegisterA);
@@ -496,7 +496,7 @@ public class Cpu
 
     private void Dey()
     {
-        RegisterY = AritmetricHelper.WrappingSub<byte, sbyte>(RegisterY, 1);
+        RegisterY = AritmetricHelper.WrappingSub<byte,sbyte>(RegisterY, 1);
         UpdateZeroAndNegativeFlags(RegisterY);
     }
 
@@ -663,7 +663,7 @@ public class Cpu
         if ((addr & 0x00FF) == 0x00FF)
         {
             var lo = MemRead(addr);
-            var hi = MemRead((byte)(addr & 0x00FF));
+            var hi = MemRead((ushort)(addr & 0xFF00));
             inDirectRef = (ushort)((hi << 8) | lo);
         }
         else inDirectRef = MemRead16(addr);
